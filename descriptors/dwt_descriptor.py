@@ -2,15 +2,17 @@
 dwt_descriptor.py
 -----------------
 Implements a 4-dimensional DWT energy descriptor for image regions,
-then demos it on three region types to show how the descriptor differs.
+then slides a 64×64 window across the entire image (no overlap) and
+saves every patch fingerprint to fingerprints.json.
 
 Dependencies: pywt, numpy, Pillow, scikit-image
 """
 
-import sys
+import json
 import argparse
 import numpy as np
 import pywt
+from pathlib import Path
 from PIL import Image
 from skimage import color
 from skimage import data as skdata
@@ -145,6 +147,9 @@ def main() -> None:
         print("No image path provided — using built-in astronaut test image.")
         print("Usage: python3.14 dwt_descriptor.py <image> [image2 ...] [--resize N]\n")
 
+    PATCH_SIZE = 64
+    all_fingerprints: list[dict] = []
+
     # ---- Run descriptor on each image ----------------------------------------
     for img_path, image in images:
         print(f"{'─' * 60}")
@@ -154,51 +159,38 @@ def main() -> None:
             print(f"Resized to {args.resize}×{args.resize} before patching")
 
         h, w = image.shape[:2]
-        # Patch size: 64×64, or smaller if the image is tiny
-        patch_size = min(64, h // 4, w // 4)
-        print(f"Patch : {patch_size}×{patch_size}\n")
 
-        # ---- Choose three representative patches ----------------------------
-        # Patches are placed at proportional positions so they work for any
-        # image size (or any resize target).
-        regions = {
-            # Top-left quadrant — often sky, background, or smooth areas.
-            "region 1 (top-left)":    _crop(image, row=h // 8,              col=w // 8,              size=patch_size),
-            # Centre — typically the main subject, often textured.
-            "region 2 (centre)":      _crop(image, row=h // 2 - patch_size, col=w // 2 - patch_size, size=patch_size),
-            # Upper-right — frequently edges, borders, or contrasting areas.
-            "region 3 (upper-right)": _crop(image, row=h // 8,              col=w * 3 // 4,          size=patch_size),
-        }
+        # ---- Slide a 64×64 window across the image with no overlap ----------
+        # Only full patches are kept; any remainder at the right/bottom edge
+        # is skipped so every patch is exactly PATCH_SIZE×PATCH_SIZE.
+        image_fingerprints: list[dict] = []
+        for row in range(0, h - PATCH_SIZE + 1, PATCH_SIZE):
+            for col in range(0, w - PATCH_SIZE + 1, PATCH_SIZE):
+                patch = _crop(image, row=row, col=col, size=PATCH_SIZE)
+                fp = dwt_descriptor(patch)
+                image_fingerprints.append({
+                    "image": img_path,
+                    "row": row,
+                    "col": col,
+                    "fingerprint": fp.tolist(),
+                })
 
-        # ---- Run descriptor on each patch -----------------------------------
-        results = {}
-        for name, patch in regions.items():
-            results[name] = dwt_descriptor(patch)
+        all_fingerprints.extend(image_fingerprints)
+        print(f"Patches: {len(image_fingerprints)} ({h // PATCH_SIZE} rows × {w // PATCH_SIZE} cols)\n")
 
-        # ---- Print side-by-side comparison table ----------------------------
-        labels = ["LL (approx)", "LH (horiz edges)", "HL (vert edges)", "HH (diag/texture)"]
-        col_w = 22
-
-        header = f"{'Subband':<20}" + "".join(f"{name:<{col_w}}" for name in results)
-        print(header)
-        print("-" * len(header))
-
-        for i, label in enumerate(labels):
-            row = f"{label:<20}"
-            for descriptor in results.values():
-                row += f"{descriptor[i]:<{col_w}.4f}"
-            print(row)
-
+        # ---- Summary table: LL energy across all patches --------------------
+        ll_values = np.array([p["fingerprint"][0] for p in image_fingerprints])
+        print(f"{'Statistic':<12} {'LL energy':>12}")
+        print("-" * 26)
+        print(f"{'min':<12} {ll_values.min():>12.4f}")
+        print(f"{'max':<12} {ll_values.max():>12.4f}")
+        print(f"{'mean':<12} {ll_values.mean():>12.4f}")
         print()
 
-    # ---- Interpretation hints (printed once) --------------------------------
-    print("Interpretation:")
-    print("  LL  — smooth regions score HIGH here (most energy is coarse structure)")
-    print("  LH  — horizontal edges score HIGH here")
-    print("  HL  — vertical edges score HIGH here")
-    print("  HH  — textured/noisy regions score HIGH here")
-    if not args.resize and len(images) > 1:
-        print("\nTip: images have different resolutions — add --resize 512 for a fair comparison.")
+    # ---- Save all fingerprints to JSON --------------------------------------
+    out_path = Path("fingerprints.json")
+    out_path.write_text(json.dumps(all_fingerprints, indent=2))
+    print(f"Saved {len(all_fingerprints)} fingerprints → {out_path.resolve()}")
 
 
 if __name__ == "__main__":
